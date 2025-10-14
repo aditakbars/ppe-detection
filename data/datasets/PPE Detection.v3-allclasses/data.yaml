@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 10
+names: ['glove', 'goggles', 'helmet', 'mask', 'no_glove', 'no_goggles', 'no_helmet', 'no_mask', 'no_shoes', 'shoes']
+
+roboflow:
+  workspace: mohamed-traore-2ekkp
+  project: ppe-detection-l80fg
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/mohamed-traore-2ekkp/ppe-detection-l80fg/dataset/3
