@@ -4,6 +4,7 @@ import time
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+from collections import defaultdict
 
 # Load environment variables
 load_dotenv()
@@ -22,7 +23,7 @@ print(f"\n📥 Loading model: {model_path}")
 model = YOLO(model_path)
 print("✅ Model loaded!")
 
-# All classes (tidak difilter)
+# All classes
 ALL_CLASSES = list(model.names.values())
 print(f"\n🎯 Monitoring all classes: {ALL_CLASSES}")
 
@@ -30,10 +31,16 @@ print(f"\n🎯 Monitoring all classes: {ALL_CLASSES}")
 VIOLATION_CLASSES = ['no_helmet', 'no_glove', 'no_goggles', 'no_mask', 'no_shoes']
 
 # ========================================
+# SCREENSHOT SETTINGS
+# ========================================
+
+SCREENSHOT_COOLDOWN = 5  # Seconds between screenshots for same violation
+MIN_VIOLATION_DURATION = 1  # Seconds - hanya screenshot kalau violation persist > X detik
+
+# ========================================
 # DISPLAY SETTINGS
 # ========================================
 
-# Max display size (fit to laptop screen)
 MAX_DISPLAY_WIDTH = 1280
 MAX_DISPLAY_HEIGHT = 720
 
@@ -41,10 +48,9 @@ def resize_frame(frame, max_width=MAX_DISPLAY_WIDTH, max_height=MAX_DISPLAY_HEIG
     """Resize frame to fit screen while maintaining aspect ratio"""
     height, width = frame.shape[:2]
     
-    # Calculate scaling factor
     scale_w = max_width / width
     scale_h = max_height / height
-    scale = min(scale_w, scale_h, 1.0)  # Don't upscale
+    scale = min(scale_w, scale_h, 1.0)
     
     if scale < 1.0:
         new_width = int(width * scale)
@@ -63,11 +69,10 @@ def get_camera_source():
     camera_source = os.getenv('CAMERA_SOURCE', 'webcam').lower()
     
     if camera_source == 'cctv':
-        # Build RTSP URL from env variables
         cctv_url = os.getenv('CCTV_URL')
         if cctv_url:
             print(f"\n📹 Using CCTV from .env")
-            print(f"🔗 URL: {cctv_url[:20]}... (hidden for security)")
+            print(f"🔗 URL: {cctv_url[:12]}... (hidden for security)")
             return cctv_url
         else:
             print("⚠️ CCTV_URL not found in .env!")
@@ -86,7 +91,6 @@ def get_camera_source():
         print(f"⚠️ Unknown camera source: {camera_source}")
         return None
 
-# Get camera source
 camera_source = get_camera_source()
 
 if camera_source is None:
@@ -100,12 +104,10 @@ if camera_source is None:
 print(f"\n🔌 Connecting to camera...")
 cap = cv2.VideoCapture(camera_source)
 
-# CCTV optimization settings
 if isinstance(camera_source, str) and camera_source.startswith('rtsp'):
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer lag
-    cap.set(cv2.CAP_PROP_FPS, 15)  # Request 15 FPS
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap.set(cv2.CAP_PROP_FPS, 15)
 
-# Check if opened successfully
 if not cap.isOpened():
     print("❌ Error: Cannot open camera/CCTV stream!")
     print("💡 Tips:")
@@ -117,7 +119,6 @@ if not cap.isOpened():
 
 print("✅ Camera connected!")
 
-# Get camera info
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fps_cam = int(cap.get(cv2.CAP_PROP_FPS))
@@ -125,11 +126,17 @@ print(f"📐 Original Resolution: {width}x{height}")
 print(f"📺 Display Max Size: {MAX_DISPLAY_WIDTH}x{MAX_DISPLAY_HEIGHT}")
 print(f"🎬 Camera FPS: {fps_cam}")
 
+print("\n💡 Screenshot Strategy:")
+print(f"   - First violation: instant screenshot")
+print(f"   - Cooldown: {SCREENSHOT_COOLDOWN} seconds")
+print(f"   - Min duration: {MIN_VIOLATION_DURATION} second(s)")
+
 print("\n💡 Controls:")
 print("   - Press 'q' to quit")
-print("   - Press 's' to save screenshot")
+print("   - Press 's' to save screenshot (manual)")
 print("   - Press '+' to increase confidence threshold")
 print("   - Press '-' to decrease confidence threshold")
+print("   - Press 'c' to change cooldown time")
 print("="*70 + "\n")
 
 # ========================================
@@ -138,6 +145,67 @@ print("="*70 + "\n")
 
 violations_folder = "../PPE-DETECTION/violations"
 os.makedirs(violations_folder, exist_ok=True)
+
+# ========================================
+# VIOLATION TRACKING STATE
+# ========================================
+
+class ViolationTracker:
+    def __init__(self):
+        self.last_screenshot_time = {}  # {violation_type: timestamp}
+        self.violation_start_time = {}  # {violation_type: timestamp}
+        self.current_violations = set()
+        self.total_screenshots = 0
+        
+    def update_violations(self, detected_violations):
+        """Update current violation state"""
+        current_set = set(detected_violations)
+        
+        # Detect new violations (state change)
+        new_violations = current_set - self.current_violations
+        
+        # Detect resolved violations
+        resolved_violations = self.current_violations - current_set
+        
+        # Update start time for new violations
+        current_time = time.time()
+        for violation in new_violations:
+            self.violation_start_time[violation] = current_time
+        
+        # Remove resolved violations from tracking
+        for violation in resolved_violations:
+            if violation in self.violation_start_time:
+                del self.violation_start_time[violation]
+            if violation in self.last_screenshot_time:
+                del self.last_screenshot_time[violation]
+        
+        self.current_violations = current_set
+        
+        return new_violations, resolved_violations
+    
+    def should_screenshot(self, violation_type, current_time):
+        """Check if we should take screenshot for this violation"""
+        
+        # Check if violation has persisted long enough
+        if violation_type in self.violation_start_time:
+            duration = current_time - self.violation_start_time[violation_type]
+            if duration < MIN_VIOLATION_DURATION:
+                return False, "duration_too_short"
+        
+        # Check cooldown
+        if violation_type in self.last_screenshot_time:
+            time_since_last = current_time - self.last_screenshot_time[violation_type]
+            if time_since_last < SCREENSHOT_COOLDOWN:
+                return False, "cooldown"
+        
+        return True, "ok"
+    
+    def record_screenshot(self, violation_type):
+        """Record that we took a screenshot"""
+        self.last_screenshot_time[violation_type] = time.time()
+        self.total_screenshots += 1
+
+tracker = ViolationTracker()
 
 # ========================================
 # DETECTION LOOP
@@ -149,7 +217,6 @@ frame_count = 0
 total_detections = 0
 confidence_threshold = 0.5
 
-# Create resizable window
 cv2.namedWindow('PPE Detection - Safety Monitoring', cv2.WINDOW_NORMAL)
 
 try:
@@ -163,59 +230,91 @@ try:
             continue
         
         frame_count += 1
+        current_time = time.time()
         
-        # Run detection (TANPA FILTER - detect semua class)
+        # Run detection
         results = model.predict(
             frame, 
             conf=confidence_threshold,
             verbose=False
         )
         
-        # Get annotated frame
         annotated_frame = results[0].plot()
         
         # Analyze detections
         detected_objects = results[0].boxes
-        has_violation = False
-        violation_details = []
         current_detections = {}
+        detected_violations = []
         
         for box in detected_objects:
             cls_id = int(box.cls[0])
             class_name = model.names[cls_id]
             confidence = float(box.conf[0])
             
-            # Count detections
             current_detections[class_name] = current_detections.get(class_name, 0) + 1
             total_detections += 1
             
-            # Check violations (semua class yang ada "no_")
             if class_name in VIOLATION_CLASSES:
-                has_violation = True
-                violation_details.append(f"{class_name.upper().replace('_', ' ')} ({confidence:.0%})")
+                detected_violations.append(class_name)
+        
+        # Update violation tracking
+        new_violations, resolved_violations = tracker.update_violations(detected_violations)
+        
+        # Log state changes
+        if new_violations:
+            print(f"🆕 New violations detected: {new_violations}")
+        if resolved_violations:
+            print(f"✅ Violations resolved: {resolved_violations}")
         
         # Calculate FPS
-        curr_time = time.time()
-        fps = 1 / (curr_time - prev_time)
-        prev_time = curr_time
+        fps = 1 / (current_time - prev_time)
+        prev_time = current_time
+        
+        # ========================================
+        # SCREENSHOT LOGIC
+        # ========================================
+        
+        screenshots_this_frame = []
+        
+        for violation in tracker.current_violations:
+            should_capture, reason = tracker.should_screenshot(violation, current_time)
+            
+            if should_capture:
+                # Take screenshot
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                violation_filename = f"{violations_folder}/violation_{violation}_{timestamp}.jpg"
+                cv2.imwrite(violation_filename, annotated_frame)
+                
+                tracker.record_screenshot(violation)
+                screenshots_this_frame.append(violation)
+                
+                # Calculate duration
+                duration = current_time - tracker.violation_start_time.get(violation, current_time)
+                
+                print(f"📸 Screenshot saved: {violation_filename}")
+                print(f"   Type: {violation} | Duration: {duration:.1f}s | Total shots: {tracker.total_screenshots}")
+                
+                violation_count += 1
         
         # ========================================
         # DRAW UI OVERLAYS
         # ========================================
         
-        # Status panel background (top)
+        # Status panel background
         cv2.rectangle(annotated_frame, (0, 0), (annotated_frame.shape[1], 90), (0, 0, 0), -1)
         cv2.rectangle(annotated_frame, (0, 0), (annotated_frame.shape[1], 90), (255, 255, 255), 2)
         
-        # FPS
+        # FPS & Settings
         cv2.putText(annotated_frame, f'FPS: {int(fps)}', (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # Confidence threshold
         cv2.putText(annotated_frame, f'Conf: {confidence_threshold:.2f}', (150, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         
-        # Detection count
+        cv2.putText(annotated_frame, f'Cooldown: {SCREENSHOT_COOLDOWN}s', (300, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+        
+        # Detection summary
         det_text = " | ".join([f"{name}: {count}" for name, count in current_detections.items()])
         if det_text:
             cv2.putText(annotated_frame, det_text, (10, 60), 
@@ -224,46 +323,56 @@ try:
             cv2.putText(annotated_frame, "No detections", (10, 60), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
         
-        # Violation warning
-        if has_violation:
-            violation_count += 1
-            
+        # Violation panel
+        if tracker.current_violations:
             # Red border
-            border_thickness = 10
             cv2.rectangle(annotated_frame, (0, 0), 
                          (annotated_frame.shape[1], annotated_frame.shape[0]), 
-                         (0, 0, 255), border_thickness)
+                         (0, 0, 255), 10)
             
-            # Warning panel background
-            warning_height = 50 + (len(violation_details) * 40)
-            cv2.rectangle(annotated_frame, (0, 100), (500, 100 + warning_height), (0, 0, 0), -1)
-            cv2.rectangle(annotated_frame, (0, 100), (500, 100 + warning_height), (0, 0, 255), 3)
+            # Calculate panel height
+            panel_height = 80 + (len(tracker.current_violations) * 35)
+            cv2.rectangle(annotated_frame, (0, 100), (600, 100 + panel_height), (0, 0, 0), -1)
+            cv2.rectangle(annotated_frame, (0, 100), (600, 100 + panel_height), (0, 0, 255), 3)
             
-            # Warning header
-            cv2.putText(annotated_frame, '⚠️ SAFETY VIOLATION DETECTED!', (10, 130), 
+            # Header
+            cv2.putText(annotated_frame, '⚠️ ACTIVE VIOLATIONS', (10, 130), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             
-            # Violation details
+            # List violations with duration and cooldown status
             y_pos = 165
-            for vtext in violation_details:
-                cv2.putText(annotated_frame, f'• {vtext}', (20, y_pos), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            for violation in sorted(tracker.current_violations):
+                duration = current_time - tracker.violation_start_time.get(violation, current_time)
+                
+                # Check screenshot status
+                can_screenshot, reason = tracker.should_screenshot(violation, current_time)
+                
+                if reason == "cooldown":
+                    time_since_last = current_time - tracker.last_screenshot_time[violation]
+                    remaining = SCREENSHOT_COOLDOWN - time_since_last
+                    status = f"[Cooldown: {remaining:.1f}s]"
+                    color = (128, 128, 128)
+                elif reason == "duration_too_short":
+                    status = "[Waiting...]"
+                    color = (128, 128, 128)
+                else:
+                    status = "[Ready to capture]"
+                    color = (0, 255, 255)
+                
+                text = f"• {violation.upper().replace('_', ' ')} ({duration:.1f}s) {status}"
+                cv2.putText(annotated_frame, text, (15, y_pos), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 y_pos += 35
-            
-            # Auto-save violation screenshot (original size)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            violation_filename = f"{violations_folder}/violation_{timestamp}.jpg"
-            cv2.imwrite(violation_filename, annotated_frame)
-            print(f"📸 Violation saved: {violation_filename}")
         
-        # Bottom status bar background
+        # Bottom status bar
         cv2.rectangle(annotated_frame, (0, annotated_frame.shape[0] - 40), 
                      (annotated_frame.shape[1], annotated_frame.shape[0]), (0, 0, 0), -1)
         
-        # Violation counter
-        cv2.putText(annotated_frame, f'Total Violations: {violation_count}', 
+        # Stats
+        stats_text = f'Screenshots: {tracker.total_screenshots} | Active Violations: {len(tracker.current_violations)}'
+        cv2.putText(annotated_frame, stats_text, 
                     (10, annotated_frame.shape[0] - 15), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255) if violation_count > 0 else (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         # Timestamp
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -272,39 +381,47 @@ try:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # ========================================
-        # RESIZE FRAME TO FIT SCREEN
+        # RESIZE & DISPLAY
         # ========================================
         
         display_frame, scale_factor = resize_frame(annotated_frame)
         
-        # Show original size info (only once)
         if frame_count == 1:
             print(f"📏 Display scale: {scale_factor:.2f}x")
             print(f"📺 Display size: {display_frame.shape[1]}x{display_frame.shape[0]}")
         
-        # ========================================
-        # DISPLAY FRAME
-        # ========================================
-        
         cv2.imshow('PPE Detection - Safety Monitoring', display_frame)
         
-        # Keyboard controls
+        # ========================================
+        # KEYBOARD CONTROLS
+        # ========================================
+        
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord('q'):
             print("\n⏹️ Stopping...")
             break
         elif key == ord('s'):
-            # Manual screenshot (save original size)
             screenshot_name = f"{violations_folder}/manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
             cv2.imwrite(screenshot_name, annotated_frame)
-            print(f"📸 Screenshot saved: {screenshot_name}")
+            print(f"📸 Manual screenshot saved: {screenshot_name}")
         elif key == ord('+') or key == ord('='):
             confidence_threshold = min(0.95, confidence_threshold + 0.05)
-            print(f"📈 Confidence threshold increased: {confidence_threshold:.2f}")
+            print(f"📈 Confidence threshold: {confidence_threshold:.2f}")
         elif key == ord('-') or key == ord('_'):
             confidence_threshold = max(0.1, confidence_threshold - 0.05)
-            print(f"📉 Confidence threshold decreased: {confidence_threshold:.2f}")
+            print(f"📉 Confidence threshold: {confidence_threshold:.2f}")
+        elif key == ord('c'):
+            print(f"\n⏱️ Current cooldown: {SCREENSHOT_COOLDOWN}s")
+            try:
+                new_cooldown = int(input("Enter new cooldown (seconds): "))
+                if 1 <= new_cooldown <= 60:
+                    SCREENSHOT_COOLDOWN = new_cooldown
+                    print(f"✅ Cooldown updated to {SCREENSHOT_COOLDOWN}s")
+                else:
+                    print("⚠️ Invalid value. Cooldown must be between 1-60 seconds")
+            except:
+                print("⚠️ Invalid input. Cooldown unchanged.")
 
 except KeyboardInterrupt:
     print("\n⚠️ Interrupted by user")
@@ -315,7 +432,6 @@ except Exception as e:
     traceback.print_exc()
 
 finally:
-    # Cleanup
     cap.release()
     cv2.destroyAllWindows()
     
@@ -323,9 +439,10 @@ finally:
     print("📊 SESSION SUMMARY")
     print("="*70)
     print(f"⏱️  Total runtime: {frame_count / fps if fps > 0 else 0:.1f} seconds")
-    print(f"🎬 Total frames processed: {frame_count}")
+    print(f"🎬 Total frames: {frame_count}")
     print(f"🎯 Total detections: {total_detections}")
-    print(f"⚠️  Total violations: {violation_count}")
-    print(f"📁 Violations saved in: {violations_folder}/")
+    print(f"📸 Total screenshots: {tracker.total_screenshots}")
+    print(f"⚠️  Unique violations: {violation_count}")
+    print(f"📁 Location: {violations_folder}/")
     print("="*70)
     print("✅ System stopped successfully!")
