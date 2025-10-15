@@ -1,3 +1,4 @@
+path: C:\PROJECT\PY\ppe-detection\data\datasets\PPE Detection.v3-allclasses\data.yaml
 train: ../train/images
 val: ../valid/images
 test: ../test/images
