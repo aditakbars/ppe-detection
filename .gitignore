@@ -1,1 +1,13 @@
 dataset/
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+*.pt
+
+# Logs
+logs/
+violations/
