@@ -1,0 +1,31 @@
+description: Ultralytics YOLO11n model trained on /content/ppe_dataset/PPE-Detection-1/data.yaml
+author: Ultralytics
+date: '2025-10-16T15:57:20.728867'
+version: 8.3.206
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: glove
+  1: goggles
+  2: helmet
+  3: mask
+  4: no_glove
+  5: no_goggles
+  6: no_helmet
+  7: no_mask
+  8: no_shoes
+  9: shoes
+args:
+  batch: 1
+  fraction: 1.0
+  half: true
+  int8: false
+  dynamic: true
+  nms: false
+channels: 3
