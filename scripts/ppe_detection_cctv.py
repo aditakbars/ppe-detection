@@ -18,7 +18,8 @@ print("="*70)
 # ========================================
 
 # Load trained model
-model_path = "../models/ppe_model_v1/ppe_best_model_3epoch.pt"
+model_path = "../models/ppe_model_v1/ppe_best_model_10epoch.pt"
+# model_path = "../yolo11n.pt"
 print(f"\n📥 Loading model: {model_path}")
 model = YOLO(model_path)
 print("✅ Model loaded!")
