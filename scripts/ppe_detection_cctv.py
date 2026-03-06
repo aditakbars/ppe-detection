@@ -207,7 +207,7 @@ MAX_DISPLAY_WIDTH = 1280
 MAX_DISPLAY_HEIGHT = 720
 
 def resize_frame(frame, max_width=MAX_DISPLAY_WIDTH, max_height=MAX_DISPLAY_HEIGHT):
-    """Resize frame to fit screen while maintaining aspect ratio"""
+    """Resize frame to fit screen while maintaining aspect ratio - optimized for quality"""
     height, width = frame.shape[:2]
     
     scale_w = max_width / width
@@ -217,7 +217,14 @@ def resize_frame(frame, max_width=MAX_DISPLAY_WIDTH, max_height=MAX_DISPLAY_HEIG
     if scale < 1.0:
         new_width = int(width * scale)
         new_height = int(height * scale)
-        resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        # Use LANCZOS4 for higher quality downscaling (sharper than INTER_AREA)
+        resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+        return resized, scale
+    elif scale > 1.0:
+        # Upscaling: use LANCZOS4 for better quality
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
         return resized, scale
     
     return frame, 1.0
